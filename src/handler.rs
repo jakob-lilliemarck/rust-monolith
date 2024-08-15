@@ -1,63 +1,62 @@
-use poem_openapi::OpenApi;
-use crate::response::MyResponse; 
+use crate::response::MyResponse;
 use crate::task_runner::TaskRunner;
+use crate::State;
 use poem::web::Data;
-use tracing::info;
-use rand::Rng;
+use poem_openapi::OpenApi;
 use std::sync::Arc;
+use std::sync::RwLock;
+use tracing::info;
 
 pub(crate) enum HandlerError {
-    Error
+    Error,
+}
+
+impl<T> From<std::sync::PoisonError<T>> for HandlerError {
+    fn from(_value: std::sync::PoisonError<T>) -> Self {
+        Self::Error
+    }
 }
 
 pub(crate) struct Api;
 
-pub fn nth_prime(n: u32) -> Option<u64> {
-    if n < 1 {
-        return None;
-    }
-
-    // The prime counting function is pi(x) which is approximately x/ln(x)
-    // A good upper bound for the nth prime is ceil(x * ln(x * ln(x)))
-    let x = if n <= 10 { 10.0 } else { n as f64 };
-    let limit: usize = (x * (x * (x).ln()).ln()).ceil() as usize;
-    let mut sieve = vec![true; limit];
-    let mut count = 0;
-
-    // Exceptional case for 0 and 1
-    sieve[0] = false;
-    sieve[1] = false;
-
-    for prime in 2..limit {
-        if !sieve[prime] {
-            continue;
-        }
-        count += 1;
-        if count == n {
-            return Some(prime as u64);
-        }
-
-        for multiple in ((prime * prime)..limit).step_by(prime) {
-            sieve[multiple] = false;
-        }
-    }
-    None
-}
-
 #[OpenApi]
 impl Api {
-    #[oai(path = "/prime", method = "post")]
-    async fn read(&self, task_runner: Data<&Arc<TaskRunner>>) -> MyResponse<i32> {
-        TaskRunner::run_task(*task_runner, async {
-            let mut rng = rand::thread_rng();
-            let limit = rng.gen_range(500_000..5_000_000);
-            info!("Finding the {}th prime", limit);
-            let now = std::time::Instant::now();
-            if let Some(prime) = nth_prime(limit) {
-                let elapsed = now.elapsed();
-                info!("Found the {}th prime to be {} in {}ms", limit, prime, elapsed.as_millis());
+    #[oai(path = "/example", method = "post")]
+    async fn io_bound(
+        &self,
+        state: Data<&Arc<RwLock<State>>>,
+        task_runner: Data<&Arc<TaskRunner>>,
+        tx: Data<&tokio::sync::mpsc::Sender<u32>>,
+    ) -> MyResponse<u32> {
+        let result = {
+            state
+                .write()
+                .map(|mut state| state.increment())
+                .map_err(|_| HandlerError::Error)
+        };
+
+        match result {
+            Ok(call_no) => {
+                // for tasks that are non-blocking, run them in the same runtime
+                task_runner.run_task(async move {
+                    info!("NONBLOCKING: received call: {}", call_no);
+                    // nonblocking sleep
+                    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                    info!("NONBLOCKING: Done processing: {}", call_no);
+                });
+
+                // For blocking tasks, like heavy cpu-bound operations, pass a message to the dedicated runtime.
+                if let Err(_) = tx.send(call_no).await {
+                    // Handle the error if sending fails
+                    return Err(HandlerError::Error).into();
+                }
+                // Return the incremented value
+                Ok(Some(call_no)).into()
             }
-        });
-        Ok(None).into()
+            Err(_) => {
+                // Handle the error if locking the state fails
+                Err(HandlerError::Error).into()
+            }
+        }
     }
 }

@@ -1,9 +1,9 @@
+use crate::handler::HandlerError;
 use poem_openapi::payload::Json;
 use poem_openapi::types::ParseFromJSON;
 use poem_openapi::types::ToJSON;
 use poem_openapi::ApiResponse;
 use std::fmt::Debug;
-use crate::handler::HandlerError;
 
 #[derive(ApiResponse)]
 pub(crate) enum MyResponse<T: 'static + ParseFromJSON + ToJSON + Send + Sync> {
@@ -11,10 +11,6 @@ pub(crate) enum MyResponse<T: 'static + ParseFromJSON + ToJSON + Send + Sync> {
     Ok(Json<T>),
     #[oai(status = 204)]
     NoContent,
-    #[oai(status = 400)]
-    BadRequest,
-    #[oai(status = 404)]
-    NotFound,
     #[oai(status = 500)]
     InternalServerError,
 }
